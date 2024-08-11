@@ -1,4 +1,7 @@
-Github Repo for "For Real?" An Audio Deepfake Detection System using a Hybrid Ensemble Model
+Github Repo for "For Real?" An Audio Deepfake Detection System using a Hybrid Ensemble Model\
+
+![mitsuki vietnam](https://github.com/user-attachments/assets/668bc572-6f6f-436f-baa6-069c5ce169fb)
+
 
 Instructions to run the program:
 1. Download/Pull the Python Scripts
