@@ -1,0 +1,159 @@
+#implementation of proposed no dann
+import torch
+import torch.nn as nn
+import librosa
+import numpy as np
+import joblib
+from transformers import AutoProcessor, WavLMModel
+from spafe.features.gfcc import gfcc
+
+
+#similar lang sa training script
+class AttentionLayer(nn.Module):
+    def __init__(self, hidden_size):
+        super(AttentionLayer, self).__init__()
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1)
+        )
+
+    def forward(self, hidden_states):
+        attention_weights = self.attention(hidden_states).squeeze(-1)
+        attention_weights = torch.softmax(attention_weights, dim=-1)
+        attended_hidden = torch.sum(hidden_states * attention_weights.unsqueeze(-1), dim=1)
+        return attended_hidden
+
+class CustomWavLMForFeatureExtraction(nn.Module):
+    def __init__(self, model_name):
+        super(CustomWavLMForFeatureExtraction, self).__init__()
+        self.wavlm = WavLMModel.from_pretrained(model_name)
+        self.attention = AttentionLayer(self.wavlm.config.hidden_size)
+
+    def forward(self, input_values, attention_mask=None):
+        outputs = self.wavlm(input_values, attention_mask=attention_mask)
+        hidden_states = outputs.last_hidden_state
+        attended_hidden = self.attention(hidden_states)
+        return attended_hidden
+
+
+
+#load model , yung model ay packaged using joblib para hindi lang yung model mailagay natin , kasama yung scaler at threshold
+saved_model = joblib.load('misa-v9-singlefire.joblib')
+calibrated_model = saved_model['calibrated_model']
+scaler = saved_model['scaler']
+final_threshold = saved_model['final_threshold']
+
+#eto naman yung pang adjust ko ulit ng decision threshold , directly connected sya sa decision threshold , i aadjust mo lang yung sa predict_sample na function, gagawing offset_threshold imbis na final_threshold
+#offset = 0.0010
+#offset_threshold = saved_model['final_threshold'] - offset
+
+#load wavlm
+model_name = "patrickvonplaten/wavlm-libri-clean-100h-base-plus"
+processor = AutoProcessor.from_pretrained(model_name)
+
+device = torch.device("cpu")
+
+
+wavlm_model = CustomWavLMForFeatureExtraction(model_name).to(device)
+
+#parang yung sa training script lang , tinatanggal yung classifer keys kasi di natin ginagamit , nag eerror sya pag sinama kasi di nagmamatch yung bilang
+state_dict = torch.load('/home/osaka/jupyter_env/pytorch_env/bin/best_wavlm_asvspoof_model.pth', map_location=device)
+keys_to_remove = ["classifier.weight", "classifier.bias"]
+for key in keys_to_remove:
+    state_dict.pop(key, None)
+
+wavlm_model.load_state_dict(state_dict, strict=False)
+wavlm_model.eval()
+
+#cqt at gfcc extraction
+def extract_handcrafted_features(audio, sr=16000):
+    cqt = np.abs(librosa.cqt(audio, sr=sr, n_bins=84, bins_per_octave=12, fmin=librosa.note_to_hz('C1')))
+    cqt_features = np.hstack([
+        np.mean(cqt, axis=1),
+        np.std(cqt, axis=1),
+        np.max(cqt, axis=1),
+        np.min(cqt, axis=1)
+    ])
+
+    gfcc_features = gfcc(audio, fs=sr, num_ceps=20, nfilts=40)
+    gfcc_features = np.hstack([
+        np.mean(gfcc_features, axis=0),
+        np.std(gfcc_features, axis=0),
+        np.max(gfcc_features, axis=0),
+        np.min(gfcc_features, axis=0)
+    ])
+
+    combined_features = np.hstack([cqt_features, gfcc_features])
+    return combined_features.reshape(1, -1)  # Ensure it's 2D
+
+#pag loload lang nung audio
+def process_audio(file_path):
+    audio, sr = librosa.load(file_path, sr=None)
+    
+    #resampling step to 16khz
+    if sr != 16000:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+        sr = 16000
+    #nilimit ko na 60 seconds lang yung iproprocess ng model natin kahit pa 30 mins yung isubmit ng user , if hindi abot ng 60 , ipapad nalang
+    max_length = 60 * sr
+    if len(audio) > max_length:
+        audio = audio[:max_length]
+    elif len(audio) < max_length:
+        audio = np.pad(audio, (0, max_length - len(audio)), 'constant')
+    
+    #kinoconvert to tensors tapos niloload sa wavlm
+    inputs = processor(audio, sampling_rate=16000, return_tensors="pt").to(device)
+    with torch.no_grad():
+        wavlm_features = wavlm_model(**inputs).detach().cpu().numpy()
+    
+    #if 3d yung wavlm features , babawasan ng isa  para maging 2d
+    if wavlm_features.ndim == 3:
+        wavlm_features = wavlm_features.squeeze(0)  
+    #if naman for some reason one dimension lang yung wavlm , gagawing dalawa , safety measure lang to though
+    elif wavlm_features.ndim == 1:
+        wavlm_features = wavlm_features.reshape(1, -1)  
+    
+    #function call lang
+    robust_features = extract_handcrafted_features(audio)
+    
+    #same lang dun sa wavlm , if 1d gagawing 2d , saferty measure lang din
+    if robust_features.ndim == 1:
+        robust_features = robust_features.reshape(1, -1)
+    
+    #kinocombine yung features into 1d , hstack = horizontal stack
+    combined_features = np.hstack((wavlm_features, robust_features))
+    
+
+    return combined_features
+
+#eto yung mismong function na tatawagin pag magprepredict na 
+def predict_sample(file_path):
+    features = process_audio(file_path)
+    
+    probability = calibrated_model.predict_proba(features)[0, 1]
+    #eto yung nagdedecide kung sspoof ba or hindi , yung final threshold dito yung pwedeng ibahin gamit yung offset threshold sa taaas kanina
+    prediction = "spoof" if probability >= final_threshold else "bonafide"
+    
+    return prediction, probability
+
+
+#function calls lang
+def main():
+    while True:
+        file_path = input("Enter the path to the audio file (or 'q' to quit): ")
+        if file_path.lower() == 'q':
+            break
+        
+        try:
+            prediction, probability = predict_sample(file_path)
+            print(f"Prediction: {prediction}")
+            print(f"Probability of being spoof: {probability:.4f}")
+            print(f"Threshold: {final_threshold:.4f}")
+        except Exception as e:
+            print(f"Error processing file: {e}")
+        
+        print()
+
+if __name__ == "__main__":
+    main()
