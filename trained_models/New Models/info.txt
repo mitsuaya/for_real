@@ -1,3 +1,4 @@
 misa-v4-nodann-tuned-full.joblib is trained on full sample size asvspoof 2019 la
 misa-v4-nodann-tuned-20.joblib is trained on 20 percent of asvspoof 2019 la
+misa-v9-singlefire is for proposed i forgor kung ilang percent of asvspoof 2019 la
 misa-v8-singlefire is the model for proposed WITH DANN (trained on 20 of asvpsoof and 20 percent for real)
