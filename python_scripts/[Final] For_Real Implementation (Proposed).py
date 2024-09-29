@@ -84,7 +84,7 @@ def monte_carlo_dropout(model, input_values, num_samples=10):
     return mean, variance
 
 def predict_sample(file_path):
-    audio, sr = librosa.load(file_path, sr=16000, duration=30)
+    audio, sr = librosa.load(file_path, sr=16000, duration=60)
     input_values = processor(audio, sampling_rate=16000, return_tensors="pt").input_values.to(device)
 
     wavlm_features, wavlm_uncertainty = monte_carlo_dropout(wavlm_model, input_values)
