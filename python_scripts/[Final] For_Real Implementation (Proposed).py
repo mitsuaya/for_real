@@ -87,7 +87,7 @@ def predict_sample(file_path):
     audio, sr = librosa.load(file_path, sr=16000, duration=60)
     input_values = processor(audio, sampling_rate=16000, return_tensors="pt").input_values.to(device)
 
-    wavlm_features, wavlm_uncertainty = monte_carlo_dropout(wavlm_model, input_values)
+    wavlm_features, wavlm_variance = monte_carlo_dropout(wavlm_model, input_values)
 
     cqt_features, gfcc_features = extract_handcrafted_features(audio)
 
@@ -96,9 +96,9 @@ def predict_sample(file_path):
     weighted_wavlm = wavlm_features.cpu().numpy().flatten() * wavlm_weight
     weighted_cqt = cqt_features.flatten() * cqt_weight
     weighted_gfcc = gfcc_features.flatten() * gfcc_weight
-    wavlm_uncertainty = wavlm_uncertainty.cpu().numpy().flatten()
+    wavlm_variance = wavlm_variance.cpu().numpy().flatten()
     
-    combined_feature = np.concatenate([weighted_wavlm, weighted_cqt, weighted_gfcc, wavlm_uncertainty])
+    combined_feature = np.concatenate([weighted_wavlm, weighted_cqt, weighted_gfcc, wavlm_variance])
 
     selected_features = selector.transform(combined_feature.reshape(1, -1))
 
